@@ -4,3 +4,4 @@ install.packages(c("forecast", "graphics", "TTR", "TSA", "aTSA", "lmtest", "MLme
 "car", "dplyr", "MASS", "tsibble", "tseries", "ggplot2", "nortest" ))
 ```
 
+# Coba
