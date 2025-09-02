@@ -1,0 +1,265 @@
+---
+title: "Praktikum 2: Investigasi dan Penanganan Autokorelasi" 
+author: "Nabil Naufal" 
+date: "2 September 2025" 
+output: html_document
+---
+
+# Pendahuluan: Menjadi Detektif untuk Model Regresi
+
+Dalam analisis data deret waktu, kita sering membuat model regresi yang di permukaan terlihat sangat bagus (misalnya, nilai R2 tinggi). Namun, model tersebut bisa memiliki masalah tersembunyi yang serius, dan yang paling umum adalah **autokorelasi**.
+
+**Apa itu Autokorelasi?**
+
+Secara sederhana, autokorelasi berarti error (sisaan) dari satu periode "menulari" error di periode berikutnya. Bayangkan model Anda membuat kesalahan prediksi di tahun 2015, dan kesalahan itu memengaruhi seberapa besar kesalahan di tahun 2016, dan seterusnya.
+
+**Mengapa ini Masalah?**
+
+Jika ada autokorelasi, kesimpulan dari model regresi kita (seperti uji-t dan uji-F) menjadi tidak valid dan tidak bisa dipercaya.
+
+**Alur Investigasi Kita Hari Ini:**
+
+1.  **Persiapan**: Menyiapkan (packages) dan data studi kasus (IPM).
+
+2.  **Model Awal**: Membuat model regresi linear yang terlihat "normal".
+
+3.  **Diagnosis**: Melakukan investigasi mendalam untuk mencari "gejala" autokorelasi, baik secara visual maupun formal (Uji Durbin-Watson).
+
+4.  **Penanganan**: Jika terbukti ada masalah, kita akan terapkan dua metode "penyembuhan": **Cochrane-Orcutt** dan **Hildreth-Lu**.
+
+5.  **Evaluasi Akhir**: Membandingkan model yang "sehat" dengan model awal untuk melihat hasil penanganan kita.
+
+## Tahap 1: Persiapan Alat dan Data
+
+Langkah pertama adalah memastikan semua package yang kita butuhkan sudah ter-install dan siap digunakan.
+
+```{r}
+# PENTING: Jalankan bagian instalasi ini HANYA JIKA Anda belum punya package-nya.
+# Hapus tanda '#' di depannya, jalankan, lalu kembalikan lagi tanda '#'-nya.
+
+# install.packages("lmtest")
+# install.packages("HoRM")
+
+# KHUSUS UNTUK PACKAGE 'orcutt':
+# Package 'orcutt' sudah diarsipkan dari CRAN dan mungkin tidak bisa di-install
+# dengan cara biasa pada versi R terbaru. Jika install.packages("orcutt") gagal,
+# gunakan metode di bawah ini.
+
+# 1. Install package 'remotes' terlebih dahulu (jika belum punya)
+# install.packages("remotes")
+
+# 2. Install 'orcutt' dari arsip CRAN menggunakan 'remotes'
+# remotes::install_cran("orcutt")
+
+
+# Setelah instalasi berhasil, panggil semua library
+library(lmtest) # Untuk Uji Durbin-Watson
+library(orcutt) # Untuk metode Cochrane-Orcutt
+library(HoRM)   # Untuk metode Hildreth-Lu
+
+
+# Input Data IPM Fiktif (2014-2025)
+tahun <- 2014:2025
+ipm <- c(62.65, 63.48, 64.16, 64.70, 65.17, 65.86, 66.29, 67.01, 67.71, 68.49, 68.68, 69.00)
+dt_ipm <- data.frame(tahun, ipm)
+
+# Lihat datanya
+print(dt_ipm)
+```
+
+## Tahap 2: Membuat Model Awal (Tersangka Utama)
+
+Kita akan membuat model regresi linear sederhana untuk memprediksi `ipm` berdasarkan `tahun`. Di tahap ini, kita berasumsi modelnya baik-baik saja.
+
+```{r}
+# Membuat model regresi OLS (Ordinary Least Squares)
+model_awal <- lm(ipm ~ tahun, data = dt_ipm)
+summary(model_awal)
+```
+
+**Observasi Awal:**
+
+Lihat! **Nilai Adjusted R-squared sangat tinggi (0.9934)** dan koefisien `tahun` **sangat signifikan (p-value \< 0.001)**. Jika kita berhenti di sini, kita akan menyimpulkan ini adalah model yang fantastis. Tapi seorang detektif yang baik tidak akan berhenti di permukaan.
+
+## Tahap 3: Diagnosis (Investigasi Sisaan)
+
+Sekarang kita akan memeriksa "TKP", yaitu **sisaan (residuals)** dari model kita. Apakah ada pola aneh?
+
+### 3.1. Diagnosis Visual
+
+Kita akan plot sisaan untuk melihat apakah ada pola yang mencurigakan.
+
+```{r}
+# Ambil sisaan dari model
+sisaan_awal <- residuals(model_awal)
+
+# Plot sisaan terhadap waktu
+plot(dt_ipm$tahun, sisaan_awal, type="o", pch=20, col="red",
+     main="Plot Sisaan vs Waktu", xlab="Tahun", ylab="Sisaan")
+abline(h=0, lty=2) # Garis referensi di y=0
+```
+
+**Kecurigaan:**
+
+Plot di atas menunjukkan pola yang **tidak acak**. Perhatikan bagaimana sisaan cenderung berkelompok: titik pertama di bawah nol, lalu naik ke atas nol, dan turun lagi. Ini adalah gejala visual yang kuat dari autokorelasi positif. Sisaan positif cenderung diikuti sisaan positif, dan sebaliknya.
+
+### 3.2. Diagnosis Formal (Uji Durbin-Watson)
+
+Visual saja tidak cukup, kita butuh bukti formal. Kita gunakan Uji Durbin-Watson.
+
+-   **H0 (Hipotesis Nol)**: Tidak ada autokorelasi. Sisaan saling bebas.
+
+-   **H1 (Hipotesis Alternatif)**: Ada autokorelasi.
+
+```{r}
+dwtest(model_awal)
+```
+
+**Hasil Investigasi:**
+
+-   P-value yang dihasilkan **sangat kecil (0.03741)**, yaitu di bawah tingkat signifikansi 0.05.
+
+-   Kesimpulan: Kita **menolak H0**. Bukti sudah kuat. Model kita **terbukti menderita autokorelasi**.
+
+## Tahap 4: Penanganan (Menyembuhkan Model)
+
+Karena model kita "sakit", kita perlu menanganinya. Kita akan coba dua metode.
+
+### Metode 1: Cochrane-Orcutt
+
+**Intuisi:** Metode ini secara iteratif (berulang-ulang) mencoba menemukan "tingkat penularan" error (disebut rho, ρ), lalu menyesuaikan model sampai autokorelasinya hilang.
+
+1. Teori Singkat: C-O adalah prosedur iteratif untuk mengestimasi koefisien regresi. Intinya adalah:
+
+2. Estimasi koefisien autokorelasi sisaan, rho (ρ).
+
+3. Gunakan ρ untuk mentransformasi variabel dependen (Y) dan independen (X) menjadi:
+
+-   $Y_t^* =Y_t−\rho Y_{t−1}$
+
+-   $X_t =X_t−\rho X_{t−1}$
+
+4. Jalankan regresi OLS pada variabel yang sudah ditransformasi ($Y_t^*$ vs $X_t^*$).
+
+5. Ulangi langkah 1-3 sampai nilai ρ konvergen.
+
+```{r}
+model_co <- cochrane.orcutt(model_awal)
+summary(model_co)
+
+# rho paling optimum
+rho <- model_co$rho
+cat("Rho optimum:", rho)
+```
+**Hasil Penanganan (C-O):**
+
+-   Lihat nilai **rho** yang diestimasi. Ini adalah "dosis" yang digunakan untuk memperbaiki model.
+
+-   Lihat statistik **Durbin-Watson baru**. Nilainya sekarang jauh lebih dekat ke 2, dan p-value-nya (\> 0.05) menunjukkan bahwa **autokorelasi sudah berhasil diatasi**.
+
+-   Perhatikan koefisien `(Intercept)` dan `tahun` yang baru. Ini adalah estimasi yang lebih valid.
+
+**Verifikasi Manual:**
+
+```{r}
+ipm.trans <- dt_ipm$ipm[-1] - dt_ipm$ipm[-12]*rho
+
+tahun.trans <- dt_ipm$tahun[-1] - dt_ipm$tahun[-12]*rho
+model_co_manual <- lm(ipm.trans~tahun.trans)
+
+b0_co_manual <- coef(model_co_manual)[1]/(1-rho)
+b1_co_manual <- coef(model_co_manual)[2]
+cat("Koefisien manual Cochrane-Orcutt:\n")
+cat("b0:", b0_co_manual, "\n")
+cat("b1:", b1_co_manual, "\n")
+```
+**Perhatikan:** Hasil koefisien manual kita sangat mirip dengan hasil dari fungsi otomatis! Ini membuktikan bahwa kita memahami mekanisme di baliknya. (Catatan: Perbedaan kecil mungkin terjadi karena fungsi otomatis melakukan beberapa iterasi).
+
+
+### Metode 2: Hildreth-Lu
+
+**Intuisi:** Metode ini lebih sistematis. Ia akan mencoba berbagai kemungkinan nilai ρ dan memilih satu yang menghasilkan **Sum of Squared Errors (SSE) terkecil.**
+
+```{r}
+#Penanganan Autokorelasi Hildreth lu
+# Hildreth-Lu
+hildreth.lu.func<- function(r, model){
+  x <- model.matrix(model)[,-1]
+  y <- model.response(model.frame(model))
+  n <- length(y)
+  t <- 2:n
+  y <- y[t]-r*y[t-1]
+  x <- x[t]-r*x[t-1]
+  
+  return(lm(y~x))
+}
+
+#Pencariab rho yang meminimumkan SSE
+r <- c(seq(0.1,0.9, by= 0.1))
+tab <- data.frame("rho" = r, "SSE" = sapply(r, function(i){deviance(hildreth.lu.func(i, model))}))
+round(tab, 4)
+```
+Pertama-tama akan dicari di mana kira-kira ρ yang menghasilkan SSE minimum. Pada hasil di atas terlihat ρminimum ketika 0.3. Namun, hasil tersebut masih kurang teliti sehingga akan dicari kembali ρ yang lebih optimum dengan ketelitian yang lebih. Jika sebelumnya jarak antar ρ
+ yang dicari adalah 0.1, kali ini jarak antar ρ adalah 0.001 dan dilakukan pada selang 0.2 sampai dengan 0.5.
+
+```{r}
+#Rho optimal di sekitar 0.4
+rOpt <- seq(0.2,0.5, by= 0.001)
+tabOpt <- data.frame("rho" = rOpt, "SSE" = sapply(rOpt, function(i){deviance(hildreth.lu.func(i, model))}))
+head(tabOpt[order(tabOpt$SSE),])
+```
+
+```{r}
+#Grafik SSE optimum
+par(mfrow = c(1,1))
+plot(tab$SSE ~ tab$rho , type = "l", xlab = "Rho", ylab = "SSE")
+abline(v = tabOpt[tabOpt$SSE==min(tabOpt$SSE),"rho"], lty = 2, col="red",lwd=2)
+text(x=0.341, y=0.2397500, labels = "rho=0.341", cex = 0.8)
+```
+
+```{r}
+model_hl <- hildreth.lu(dt_ipm$ipm, dt_ipm$tahun, rho = 0.341)
+summary(model_hl)
+```
+
+```{r}
+#Transformasi Balik
+cat("y = ", coef(modelHL)[1]/(1-0.341), "+", coef(modelHL)[2],"x", sep = "")
+```
+```{r}
+#Deteksi autokorelasi
+dwtest(modelHL)
+```
+
+**Hasil Penanganan (H-L):**
+
+-   Plot yang dihasilkan secara visual menunjukkan nilai ρ mana yang menjadi "juara" (memiliki SSE terendah).
+
+-   Hasil summary memberikan model akhir yang juga sudah "sehat", dengan statistik D-W yang sudah membaik.
+
+## Tahap 5: Evaluasi Akhir
+
+Mari kita bandingkan SSE dan Statistik Durbin-Watson dari ketiga model untuk melihat seberapa efektif penanganan kita.
+
+```{r}
+# Menghitung SSE untuk setiap model secara manual
+sse_awal <- sum(residuals(model_awal)^2)
+sse_co <- sum(residuals(model_co)^2)
+sse_hl <- sum(residuals(model_hl)^2)
+
+# Membuat tabel perbandingan
+data.frame(
+  Metode = c("Model Awal (Sakit)", "Cochrane-Orcutt (Sehat)", "Hildreth-Lu (Sehat)"),
+  SSE = c(sse_awal, sse_co, sse_hl),
+  DW_Statistic = c(dwtest(model_awal)$statistic, model_co$DW[3], dwtest(model_hl)$statistic)
+)
+
+```
+
+**Kesimpulan Investigasi:**
+
+-   Baik metode Cochrane-Orcutt maupun Hildreth-Lu berhasil menurunkan SSE model, artinya model yang baru lebih akurat.
+
+-   Keduanya juga berhasil menghilangkan autokorelasi, yang ditunjukkan oleh statistik D-W yang mendekati 2.
+
+-   Model akhir yang seharusnya kita gunakan adalah salah satu dari model yang telah ditangani, karena estimasi koefisien dan uji signifikansinya sekarang jauh lebih dapat dipercaya.
