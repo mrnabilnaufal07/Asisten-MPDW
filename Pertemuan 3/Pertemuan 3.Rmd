@@ -1,8 +1,7 @@
 ---
 title: "Pertemuan 3 - Regresi dengan Peubah Lag"
 author:
-- Adelia Putri Pangestika
-- Muhammad Rizky Nurhambali
+- Nabil Naufal
 output:
   html_document:
     theme: yeti
