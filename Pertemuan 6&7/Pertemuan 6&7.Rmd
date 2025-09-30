@@ -6,6 +6,24 @@ output:
 date: "2025-09-30"
 ---
 
+# Pendahuluan
+
+Dalam dokumen ini, kita akan membedah tuntas alur kerja pemodelan ARIMA (Autoregressive Integrated Moving Average) dari awal hingga akhir. Tujuannya adalah untuk memahami cara:
+
+1.  **Mengidentifikasi** pola dalam data deret waktu.
+
+2.  **Menentukan** model ARIMA yang paling sesuai.
+
+3.  **Mendiagnosis** kesehatan model yang terpilih.
+
+4.  **Melakukan peramalan** (forecast) untuk melihat ke masa depan.
+
+Untuk membuat proses belajar lebih efektif, kita akan menggunakan dua studi kasus:
+
+-   **Data Bangkitan (Simulasi):** Kita akan membuat data sendiri di mana kita tahu "jawaban" sebenarnya. Ini seperti berlatih di lingkungan yang terkendali untuk memastikan metode kita bekerja.
+
+-   **Data Riil (Kurs Mata Uang):** Kita akan menerapkan skill yang sudah kita pelajari pada data dunia nyata yang lebih kompleks dan tak terduga.
+
 ## Packages
 
 ```{r}
@@ -20,11 +38,13 @@ library(aTSA)
 library(graphics)
 ```
 
-## Data Bangkitan
+## Studi Kasus 1: Data Simulasi MA(2)
+
+Kita akan mulai dengan membangkitkan data dari model *Moving Average* orde 2 atau **MA(2)**. Kenapa? Karena kita tahu persis model aslinya, ini adalah cara terbaik untuk menguji apakah langkah-langkah analisis kita mampu menemukan kembali model yang benar.
 
 ### Pembangkitan Data
 
-Data yang akan dibangkitkan adalah data dengan model MA(2) sebagai berikut.
+Kita akan membuat 175 observasi dari model MA(2) dengan parameter θ1​=0.55 dan θ2​=0.65, serta rata-rata (mean) sebesar 4.
 
 ```{r}
 set.seed(99)
@@ -32,7 +52,7 @@ ma2 <- arima.sim(list(order = c(0,0,2), ma = c(0.55,0.65)), n = 175)+4
 ma2
 ```
 
-Data kemudian dibagi menjadi data latih dan data uji. Pembagian kali ini dilakukan dengan proporsi / perbandingan, yaitu 80:20.
+Selanjutnya, kita akan membuang 25 data pertama untuk menghindari efek awal (*warm-up effect*) dan membagi sisanya menjadi **data latih (80%)** untuk membangun model dan **data uji (20%)** untuk validasi peramalan.
 
 ```{r}
 ma2 <- ma2[-c(1:25)]
@@ -42,7 +62,9 @@ ma2.test <- ma2[121:150]
 
 ### Eksplorasi Data
 
-Sebelum masuk dalam tahap pemodelan, dilakukan eksplorasi data dengan plot deret waktu untuk melihat pola data.
+Sebelum memodelkan, kita wajib "berkenalan" dengan data kita melalui visualisasi. Apakah data kita **stasioner**? Stasioner artinya rataan dan ragamnya konstan sepanjang waktu. Ini adalah syarat utama untuk pemodelan ARIMA.
+
+#### Plot Deret Waktu
 
 ```{r}
 #--PLOT TIME SERIES--#
@@ -55,6 +77,8 @@ plot(ma2.train,
 ```
 
 Berdasarkan plot data deret waktu di atas, terlihat data cenderung stasioner dalam rataan dan ragam. Data stasioner dalam rataan karena menyebar/bergerak di sekitar nilai tengahnya (0) dan dikatakan stasioner dalam ragam karena memiliki lebar pita yang cenderung sama. Selain dengan plot data deret waktu, akan dilakukan pengecekan stasioneritas data dengan plot ACF dan uji ADF.
+
+#### Plot ACF dan Uji Formal (Uji ADF)
 
 ```{r}
 #--CEK KESTASIONERAN---#
@@ -137,7 +161,15 @@ Berdasarkan pendugaan parameter di atas, nilai AIC terkecil dimiliki oleh model 
 
 ### Analisis Sisaan
 
-Model terbaik hasil identifikasi kemudian dicek asumsi sisaannya. Sisaan model ARIMA harus memenuhi asumsi normalitas, kebebasan, dan kehomogenan ragam. Diagnostik model dilakukan secara eksplorasi dan uji formal.
+Model terbaik sudah dipilih, tapi apakah ia "sehat"? Sisaan (*residuals*) dari model yang baik harus memenuhi beberapa asumsi:
+
+-   **Normalitas:** Sisaan menyebar normal.
+
+-   **Independensi:** Tidak ada autokorelasi antar sisaan (saling bebas).
+
+-   **Homoskedastisitas:** Ragam sisaan homogen (konstan).
+
+-   **Rataan Nol:** Rata-rata sisaan sama dengan nol.
 
 #### Eksplorasi Sisaan
 
@@ -327,7 +359,7 @@ lambda
 bc$x[bc$y > max(bc$y) - 1/2 * qchisq(.95,1)]
 ```
 
-Plot Boxcox menunjukkan nilai *rounded value* ($\lambda$) optimum sebesar **6,62** dan pada selang kepercayaan 95% nilai memiliki batas bawah **5,66** dan batas atas **7,68**. Selang tersebut memuat nilai satu sehingga dapat dikatakan bahwa data bangkitan stasioner dalam ragam.
+Plot Boxcox menunjukkan nilai *rounded value* ($\lambda$) optimum sebesar **6,62** dan pada selang kepercayaan 95% nilai memiliki batas bawah **5,66** dan batas atas **7,68**. Selang tersebut tidak memuat nilai satu sehingga dapat dikatakan bahwa data bangkitan tidak stasioner dalam ragam.
 
 ### Penanganan Ketidakstasioneran Data
 
@@ -337,6 +369,18 @@ plot.ts(train.diff, lty=1, xlab="waktu", ylab="Data Difference 1 Kurs", main="Pl
 ```
 
 Berdasarkan plot data deret waktu, terlihat bahwa data sudah stasioner dalam rataan ditandai dengan data bergerak pada nilai tengah tertentu (tidak terdapat trend ataupun musiman pada data)
+
+#### Plot Box Cox setelah Penanganan
+```{r}
+index <- seq(1:429)
+bc = MASS::boxcox(ts(train.diff+300)~index, lambda = seq(-2,2,by=1))
+#Nilai Rounded Lambda
+lambda <- bc$x[which.max(bc$y)]
+lambda
+#SK
+bc$x[bc$y > max(bc$y) - 1/2 * qchisq(.95,1)]
+```
+
 
 #### Plot ACF
 
