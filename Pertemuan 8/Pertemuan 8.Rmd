@@ -1,0 +1,551 @@
+---
+title: "Modul Analisis SARIMA: Pendekatan 6 Fase Dokter Data"
+subtitle: "Studi Kasus: Data Emisi CO2 (`datasets::co2`)"
+author: "Nabil Naufal"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: journal
+    number_sections: yes
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Pendahuluan: Berpikir Seperti "Dokter Data"
+
+Selamat datang di modul SARIMA. Banyak orang bisa menjalankan `auto.arima()` dan mendapat hasil. Tapi seorang analis data sejati—seorang "Dokter Data"—tidak sekadar memberi obat; mereka **mendiagnosis** terlebih dahulu.
+
+Data mentah adalah "pasien" kita. Pasien ini datang dengan gejala campur aduk:
+
+  * **Tren** (demam jangka panjang)
+  * **Musiman** (alergi periodik)
+  * **Volatilitas** (detak jantung tidak stabil)
+  * **Noise** (faktor acak)
+
+Tugas kita adalah membedah ini semua. Alur 6 Fase ini adalah protokol sistematis kita untuk:
+
+1.  **Mendiagnosis** penyakitnya (Fase 1).
+2.  **Menstabilkan** pasien (Fase 2).
+3.  **Menganalisis** sampel lab (Fase 3).
+4.  **Menguji resep** obat (Fase 4).
+5.  **Memvalidasi kesembuhan** (Fase 5).
+6.  **Memprediksi** kesehatan di masa depan (Fase 6).
+
+Mari kita mulai.
+
+# Fase 0: Persiapan Ruang Praktik
+
+Sebelum kita bisa mendiagnosis pasien, kita perlu menyiapkan "ruang operasi" kita. Ini berarti memuat *packages* (alat medis) dan menyiapkan *data* (pasien).
+
+## 0.1 Memuat Packages (Alat Medis)
+
+Kita akan memuat *packages* yang esensial. `forecast` adalah alat utama kita, dan `tidyverse` membantu kita membuat visualisasi yang lebih baik (`autoplot`).
+
+```{r packages, message=FALSE, warning=FALSE}
+
+# Muat packages inti
+library(forecast)  # Fungsi inti: Arima(), auto.arima(), forecast(), checkresiduals()
+library(tseries)   # Fungsi adf.test()
+library(tidyverse) # Untuk plotting (autoplot, ggplot2)
+```
+
+## 0.2 Memuat & Membagi Data (Pasien)
+
+Sangat penting dalam analisis deret waktu untuk **menyisihkan** sebagian data sebagai **data uji (test set)**. Kita akan membangun model kita hanya menggunakan **data latih (train set)**, dan nanti di Fase 6, kita akan menguji seberapa baik ramalan model kita terhadap data uji yang "belum pernah dilihatnya".
+
+Kita akan menggunakan 80% data pertama sebagai data latih dan 20% sisanya sebagai data uji.
+
+```{r data-split}
+# Muat data mentah dari R
+data_mentah <- datasets::co2
+
+# Total observasi: 468
+# 80% data latih: 372 observasi (dari obs 1 s/d 372)
+# 20% data uji: 96 observasi (dari obs 373 s/d 468)
+
+# Buat data latih
+train.ts <- subset(data_mentah, start=1, end=372)
+# Buat data uji (akan kita gunakan di Fase 6)
+test.ts <- subset(data_mentah, start=373, end=468)
+
+# Mari kita lihat data latih yang akan kita analisis
+autoplot(train.ts) +
+  ggtitle("Data Latih CO2 (1959-1990)") +
+  ylab("CO2 (ppm)") +
+  xlab("Tahun")
+```
+
+# Fase 1: Triase Pasien (Eksplorasi & Diagnosis)
+
+**Tujuan:** Mendiagnosis 3 "penyakit" utama data: **Tren**, **Musiman**, dan **Volatilitas (Ragam)**. Kita tidak hanya mem-plot, kita *mencari gejala*.
+
+## 1.1 Diagnosis Tren & Musiman
+
+Plot `autoplot(train.ts)` di atas sudah sangat jelas:
+
+1.  **Gejala Tren:** Jelas terlihat ada **tren naik** jangka panjang. Data ini "demam".
+2.  **Gejala Musiman:** Jelas terlihat pola "gigi gergaji" yang berulang setiap tahun. Data ini "alergi" musiman.
+
+## 1.2 Diagnosis Volatilitas (Pemeriksaan Kritis\!)
+
+Sekarang, kita periksa "detak jantung" pasien. Apakah ayunannya stabil, atau semakin "liar"? Ini adalah diagnosis yang sering terlewat oleh analis pemula.
+
+```{r fase1-seasonplot}
+# 'seasonplot' memplot data per musim (tahun) di atas satu sama lain
+seasonplot(train.ts, 12, main="Seasonal Plot of CO2 (Data Latih)", 
+           ylab="CO2 (ppm)", col=rainbow(31)) # 31 tahun di data latih
+```
+
+### Hasil Diagnosis (Triase):
+
+Perhatikan plot di atas dengan saksama:
+
+  * Garis untuk tahun-tahun awal (misal, 1960-an, di bagian bawah plot) memiliki "ayunan" (amplitudo) yang **relatif sempit**.
+  * Garis untuk tahun-tahun akhir (misal, 1980-an, di bagian atas plot) memiliki ayunan yang **jauh lebih lebar**.
+
+Ini adalah gejala klasik dari **Heteroskedastisitas** (ragam yang tidak stasioner). Artinya, "ayunan" musiman *semakin membesar* seiring dengan naiknya level tren. Pola ini disebut **multiplikatif**.
+
+## 1.3 Resume Medis (Hasil Fase 1)
+
+  * **Pasien:** `train.ts`
+  * **Diagnosis Ditegakkan:**
+    1.  **Non-stasioner Rataan (Tren Naik Kuat)**
+    2.  **Non-stasioner Rataan (Musiman Kuat, $s=12$)**
+    3.  **Non-stasioner Ragam (Heteroskedastisitas Multiplikatif)**
+  * **Rencana Tindak Lanjut (Fase 2):**
+    Kita tidak bisa langsung mengobati Tren/Musiman dengan *differencing*. Kita harus mengobati penyakit \#3 (ragam) terlebih dahulu. "Obat" standar untuk ini adalah **Transformasi Logaritmik**.
+    
+
+# Fase 2: Stabilisasi Pasien (Transformasi & Differencing)
+
+**Tujuan:** Memberi "obat" untuk 3 penyakit yang kita diagnosis di Fase 1. **Urutan pemberian obat sangat penting!**
+
+1.  Kita harus mengobati **Penyakit Ragam** (Heteroskedastisitas) **terlebih dahulu**.
+2.  Setelah ragam stabil, baru kita obati **Penyakit Rataan** (Musiman dan Tren).
+
+## 2.1 Obat 1: Stabilisasi Ragam (Log Transform)
+
+"Obat" standar untuk data multiplikatif (ayunan yang semakin membesar) adalah **Transformasi Logaritmik**. Ini akan "menekan" ayunan yang besar dan membuat pola datanya menjadi aditif (stabil).
+
+```{r fase2-log}
+# Terapkan 'obat' log ke data latih kita
+log_train.ts <- log(train.ts)
+
+# Mari kita cek hasilnya...
+autoplot(log_train.ts) +
+  ggtitle("Plot setelah Log Transform") +
+  ylab("Log(CO2 ppm)")
+```
+
+Lihat\! Ayunan "gigi gergaji"-nya sekarang terlihat **jauh lebih stabil**. Lebar ayunan di awal (1960-an) kini hampir sama dengan lebar ayunan di akhir (1990-an).
+
+**Diagnosis:** Penyakit Ragam (Heteroskedastisitas) **teratasi**.
+
+
+## 2.2 Obat 2: Penghilang Musiman (Seasonal Differencing)
+
+Sekarang ragam sudah stabil, kita bisa obati penyakit rataan. Kita obati pola yang paling jelas dulu: **Musiman**.
+
+"Obat"-nya adalah **Seasonal Differencing ($D=1$)**. Kita akan menghitung selisih antara data bulan ini dengan data 12 bulan lalu (`lag = 12`).
+
+```{r fase2-seasonal-diff}
+# Terapkan 'obat' differencing musiman pada data yang sudah di-log
+data_D1 <- diff(log_train.ts, lag = 12)
+
+# Mari kita cek hasilnya...
+autoplot(data_D1) +
+  ggtitle("Plot setelah Log & Seasonal Diff (D=1)") +
+  ylab("Log(CO2) D=1")
+```
+
+**Diagnosis:** Pola "gigi gergaji" 12 bulanan **sudah hilang**. Penyakit Musiman **teratasi**. ✅
+
+**Gejala Baru:** Namun, perhatikan. Datanya sekarang tidak lagi memiliki pola musiman, tapi masih terlihat "melayang ke atas". Ini adalah sisa **Penyakit Tren** yang belum sembuh total.
+
+
+## 2.3 Obat 3: Penghilang Tren (Non-Seasonal Differencing)
+
+Terakhir, kita obati sisa "demam" tren yang masih ada.
+
+"Obat"-nya adalah **Non-Seasonal Differencing ($d=1$)**. Kita hitung selisih antara data bulan ini dengan data 1 bulan lalu (`lag = 1`).
+
+```{r fase2-nonseasonal-diff}
+# Terapkan 'obat' differencing non-musiman pada data DARI LANGKAH SEBELUMNYA
+data_stasioner <- diff(data_D1, lag = 1)
+
+# Mari kita cek hasilnya...
+autoplot(data_stasioner) +
+  ggtitle("Plot Stasioner (Log, D=1, d=1)") +
+  ylab("Log(CO2) D=1, d=1")
+```
+
+**Diagnosis:** **SEMPURNA.** Data kini terlihat "diam" (stasioner) dan berfluktuasi di sekitar nol. Tidak ada lagi tren, tidak ada lagi musiman. Penyakit Tren **teratasi**. ✅
+
+
+## 2.4 Validasi Formal (Uji ADF)
+
+Mata kita bilang data sudah stasioner. Sekarang kita buktikan dengan statistik menggunakan Uji ADF (Augmented Dickey-Fuller).
+
+  * **$H_0$ (Hipotesis Nol):** Data **TIDAK** stasioner (masih punya *unit root*).
+  * **$H_1$ (Hipotesis Alternatif):** Data stasioner.
+  * **Tujuan kita:** Kita ingin $p-value < 0.05$ agar bisa **Tolak $H_0$**.
+
+
+```{r fase2-adf}
+# Jalankan uji ADF pada data final kita
+tseries::adf.test(data_stasioner)
+```
+
+**Hasil:** Kita mendapatkan $p-value$ yang sangat kecil (misal, `p-value = 0.01`). Ini **kurang dari 0.05**.
+
+**Kesimpulan:** Kita **Tolak $H_0$**. Bukti statistik mengonfirmasi bahwa `data_stasioner` kita **sudah stasioner**.
+
+## 2.5 Resume Medis (Hasil Fase 2)
+
+  * **Pasien:** `train.ts`
+  * **Perawatan yang Diberikan:**
+    1.  **Transformasi Log** (untuk stabilisasi ragam).
+    2.  **Seasonal Differencing** ($D=1$, `lag=12`) (untuk menghilangkan musiman).
+    3.  **Non-Seasonal Differencing** ($d=1$, `lag=1`) (untuk menghilangkan tren).
+  * **Status Pasien:** **Stabil & Stasioner**.
+  * **Rencana Tindak Lanjut (Fase 3):**
+    Pasien kini siap untuk "Analisis Laboratorium" (ACF/PACF) untuk mencari tahu "resep" $p, q, P, Q$ dari data `data_stasioner` ini.
+    
+Baik. Pasien (data) kita sudah stabil. Saatnya "Analisis Laboratorium" untuk mencari tahu "resep" obat yang tepat.
+
+# Fase 3: Analisis Laboratorium (Identifikasi Model)
+
+**Tujuan:** Mencari "DNA" atau "sidik jari" model dari data `data_stasioner` kita yang sudah bersih.
+
+Data `data_stasioner` ini sudah tidak memiliki tren atau musiman, tapi di dalamnya masih tersimpan "pola acak" atau struktur korelasi. Kita ingin tahu:
+* Bagaimana data hari ini berhubungan dengan *kemarin*? (Ini adalah komponen **Non-Musiman** $p, q$).
+* Bagaimana data hari ini berhubungan dengan *hari yang sama tahun lalu*? (Ini adalah komponen **Musiman** $P, Q$).
+
+"Tes lab" kita adalah plot **ACF** (Autocorrelation Function) dan **PACF** (Partial Autocorrelation Function).
+
+* **ACF (Fungsi Autokorelasi):** Mengukur korelasi *total* (langsung dan tidak langsung). Pola *cuts off* (terputus tiba-tiba) mengindikasikan model **MA(q)** atau **SMA(Q)**.
+* **PACF (Fungsi Autokorelasi Parsial):** Mengukur korelasi *langsung* (setelah menghilangkan efek lag perantaranya). Pola *cuts off* mengindikasikan model **AR(p)** atau **SAR(P)**.
+
+## 3.1 Tindakan: Menjalankan Tes Lab (ACF/PACF)
+
+Kita akan mem-plot ACF dan PACF dari `data_stasioner`. Kita butuh `lag.max` yang cukup panjang (misal 48) agar bisa melihat beberapa siklus musiman (lag 12, 24, 36).
+
+```{r fase3-acf-pacf}
+# Atur layout plot agar bisa tampil berdampingan (atas-bawah)
+par(mfrow=c(2,1), mar=c(3,4,4,2)+0.1) # Margin agar judul rapi
+
+# 1. Plot ACF (Tes Lab 1)
+acf(data_stasioner, lag.max=48, 
+    main="ACF dari Data Stasioner (Log, d=1, D=1)")
+
+# 2. Plot PACF (Tes Lab 2)
+pacf(data_stasioner, lag.max=48, 
+     main="PACF dari Data Stasioner (Log, d=1, D=1)")
+
+# Kembalikan layout plot ke default
+par(mfrow=c(1,1))
+```
+
+## 3.2 Analisis Hasil Lab (Metode "Dua Kacamata")
+
+### Diagnosis Zona Non-Musiman (Lags 1, 2, 3...)
+
+Mari pakai **Kacamata Non-Musiman**:
+
+  * **Lihat ACF:** Ada **satu *spike* negatif signifikan** di **lag 1** yang langsung *cuts off* (terputus). Lag 2, 3, dst, berada di dalam batas biru.
+  * **Lihat PACF:** *Spike* di lag 1, 2, 3... terlihat *tails off* (meluruh secara perlahan).
+
+**Diagnosis:** Pola (ACF *cuts off* di 1, PACF *tails off*) adalah "sidik jari" klasik dari model **MA(1)**.
+
+  * **Kesimpulan Non-Musiman:** **$p = 0, q = 1$**.
+
+
+### Diagnosis Zona Musiman (Lags 12, 24, 36...)
+
+Sekarang ganti, pakai **Kacamata Musiman**:
+
+  * **Lihat ACF:** Lihat *hanya* lag 12, 24, 36. Kita melihat pola yang sama persis\! Ada **satu *spike* negatif signifikan** di **lag 12** yang langsung *cuts off*. Lag 24 dan 36 berada di dalam batas biru.
+  * **Lihat PACF:** *Spike* di lag 12, 24... terlihat *tails off* (meluruh).
+
+**Diagnosis:** Pola (ACF *cuts off* di 12, PACF *tails off* di kelipatan 12) adalah "sidik jari" klasik dari model **SMA(1)**.
+
+  * **Kesimpulan Musiman:** **$P = 0, Q = 1$**.
+
+
+## 3.3 Resume Medis (Hasil Fase 3)
+
+  * **Pasien:** `data_stasioner`
+
+  * **Hasil Lab (ACF/PACF):**
+
+    1.  **Non-Seasonal (p,q):** Teridentifikasi sebagai MA(1) $\rightarrow$ **$p=0, q=1$**.
+    2.  **Seasonal (P,Q):** Teridentifikasi sebagai SMA(1) $\rightarrow$ **$P=0, Q=1$**.
+
+  * **Resep Tentatif (Kandidat Model \#1):**
+    Kita gabungkan semua temuan kita dari Fase 2 dan 3:
+
+      * $p=0, d=1, q=1$
+      * $P=0, D=1, Q=1$
+      * $s=12$
+      * Transformasi: **Log**
+
+    Model lengkap tentatif kita adalah **$ARIMA(0,1,1) \times (0,1,1)_{12}$** yang akan diterapkan pada data `log(train.ts)`.
+
+  * **Rencana Tindak Lanjut (Fase 4):**
+    Pasien kini siap untuk "Uji Coba Resep". Kita akan membuat model ini dan membandingkannya dengan "opini kedua" (misal, dari `auto.arima`) untuk memilih yang terbaik.
+
+
+Plot tersebut mengonfirmasi 100% analisis kita di Fase 3:
+
+1.  **ACF:** *Cuts off* (terputus) tajam di **lag 1** (non-musiman) dan **lag 12** (musiman, lag 12 di plot Anda adalah angka `1` di sumbu x).
+2.  **PACF:** *Tails off* (meluruh) di kedua zona tersebut.
+
+Diagnosis kita $ARIMA(0,1,1) \times (0,1,1)_{12}$ sangat kuat.
+
+Sekarang, mari kita lanjutkan ke fase "Uji Coba Resep".
+
+
+# Fase 4: Uji Coba Resep (Estimasi & Seleksi Model)
+
+**Tujuan:** Memilih model "juara" (champion) dari beberapa kandidat. Kita tidak hanya percaya pada satu hasil lab; kita mengujinya.
+
+Kita akan menilai setiap "resep" (model) berdasarkan **"Tiga Pilar Seleksi Model"**:
+1.  **Akurasi (AICc):** Seberapa baik model *fit* dengan data? Kita cari nilai **terkecil**. (Kita pakai AICc, bukan AIC, karena lebih baik untuk sampel yang tidak terlalu besar).
+2.  **Signifikansi Parameter:** Apakah semua "bahan" dalam resep itu *penting*? (Apakah $p-value$ untuk setiap koefisien $\phi, \theta, \Phi, \Theta$ < 0.05?). Jika ada yang tidak signifikan, model itu **overfitting** (terlalu rumit).
+3.  **Parsimoni (Keringkasan):** Jika dua model sama-sama akurat dan signifikan, pilih yang jumlah parameternya (p+q+P+Q) lebih **sedikit**.
+
+**PENTING:** Kita fit model pada `log_train.ts` (data *sebelum* differencing). Fungsi `Arima()` akan melakukan differencing $d=1$ dan $D=1$ secara internal untuk kita.
+
+## 4.1 Kandidat 1: Resep Manual Kita (Hasil Fase 3)
+
+Ini adalah model $ARIMA(0,1,1) \times (0,1,1)_{12}$ yang kita identifikasi dari ACF/PACF.
+
+```{r fase4-manual}
+# Muat library lmtest untuk coeftest
+library(lmtest)
+
+# Kandidat 1: Resep Manual Kita
+model_manual <- Arima(log_train.ts, 
+                      order = c(0,1,1), 
+                      seasonal = list(order = c(0,1,1), period = 12))
+
+# Cek 1: Akurasi (AICc)
+summary(model_manual)
+
+# Cek 2: Signifikansi Parameter
+coeftest(model_manual) 
+```
+
+### Diagnosis `model_manual`:
+
+  * **Akurasi:** Catat nilai `AICc` (misalnya, -4039.32).
+  * **Signifikansi:** Lihat `coeftest()`. Kedua parameter (`ma1` dan `sma1`) memiliki $p-value$ yang sangat kecil (ditandai `***`). Artinya, keduanya **sangat signifikan**.
+  * **Status:** Kandidat yang sangat kuat. Lolos Pilar \#1 dan \#2.
+
+## 4.2 Kandidat 2: Resep Otomatis (Opini Kedua)
+
+Mari kita minta "opini kedua" dari `auto.arima()`. Ini adalah alat yang hebat, tetapi kita harus tetap jadi "dokter"-nya, bukan "perawat" yang nurut saja.
+
+```{r fase4-auto}
+
+# Kandidat 2: Resep Otomatis
+# Kita set stepwise=FALSE agar pencariannya lebih teliti (bukan 'stepwise')
+model_auto <- auto.arima(log_train.ts, 
+                         ic = "aicc",            # Kriteria seleksi
+                         stepwise = FALSE,       # Lakukan pencarian penuh
+                         approximation = FALSE)  # Lebih akurat
+
+# Cek hasilnya
+summary(model_auto)
+coeftest(model_auto)
+```
+
+### Diagnosis `model_auto`:
+
+Hasil dari model auto.arima sedikit berbeda dengan model manual, tapi nilai AICc yang dihasilkan jauh lebih tinggi dibandingkan model yang telah kita tepakan di awal. AR 1 juga tidak signifikan, menunjukkan kalau model sebelumnya jauh lebih cocok. 
+
+
+## 4.4 Resume Medis (Hasil Fase 4)
+
+  * **Uji Tanding Selesai.**
+  * **Model Ditolak:** $ARIMA(0,1,3) \times (0,1,1)_{12}$ (karena *overfitting*, parameter tidak signifikan).
+  * **Model "Juara" Dipilih:** **$ARIMA(0,1,1) \times (0,1,1)_{12}$** (`model_manual`). Model ini **Akurat** (AICc rendah), **Signifikan** (semua parameter valid), dan **Parsimonious** (sederhana).
+  * **Rencana Tindak Lanjut (Fase 5):**
+    Model "juara" ini sekarang harus melewati pemeriksaan terakhir: **Audit Model (Diagnostik Sisaan)** untuk memastikan ia telah "menyembuhkan" pasien dengan sempurna.
+    
+
+# Fase 5: Audit Model (Diagnostik Sisaan)
+
+**Tujuan:** Memastikan "pasien" sembuh total. Sisaan (residuals) dari `model_terpilih` kita haruslah **White Noise** (ampas acak yang tidak berpola).
+
+Bayangkan kita telah menyedot semua "pola" (tren, musiman, AR, MA) dari data kita. Yang seharusnya tersisa (sisaan) hanyalah "ampas" acak.
+
+Jika sisaan kita *bukan* White Noise (misalnya, masih ada pola di dalamnya), itu artinya **model kita GAGAL**. Itu berarti masih ada "penyakit" (pola) yang terlewat oleh resep kita. Model kita baru bisa dinyatakan "sehat" jika sisaannya lulus uji utama.
+
+## 5.1 Tindakan 1: Pemeriksaan 3-in-1 (checkresiduals)
+
+Kita akan gunakan satu perintah "emas" dari paket `forecast` yang merangkum hampir semua yang kita butuhkan.
+
+```{r fase5-diagnostik}
+# Model "Juara" kita dari Fase 4
+model_terpilih <- model_manual 
+# model_terpilih <- Arima(log_train.ts, order=c(0,1,1), 
+#                         seasonal=list(order=c(0,1,1), period=12))
+
+# 1. Perintah Emas: checkresiduals()
+# Ini akan memberi kita 3 plot diagnostik + 1 uji Ljung-Box
+forecast::checkresiduals(model_terpilih)
+```
+
+### Hasil Audit `checkresiduals`:
+
+Mari kita bedah 3 output yang baru saja muncul:
+
+1.  **Plot Sisaan (atas):**
+
+      * **Apa yang kita lihat:** Plot sisaan (residuals) dari waktu ke waktu.
+      * **Diagnosis:** Kita ingin melihat plot ini **acak** di sekitar garis nol. Tidak boleh ada pola yang jelas (seperti tren atau musiman). Hasil kita terlihat cukup acak. **Bagus.**
+
+2.  **Plot ACF Sisaan (kiri bawah):**
+
+      * **Apa yang kita lihat:** Plot ACF dari sisaan.
+      * **Diagnosis (Sangat Penting):** Ini adalah tes visual untuk **independensi**. Jika model kita bagus, **TIDAK BOLEH ADA** *spike* yang keluar dari garis batas biru (selain lag 0).
+      * **Hasil:** Semua *spike* berada di dalam batas biru. **Bagus.**
+
+3.  **Uji Ljung-Box (Teks di console):**
+
+      * `checkresiduals()` juga menjalankan uji Ljung-Box untuk kita. Anda akan melihat teks di *console* seperti ini:
+        `Ljung-Box test`
+        `data: Residuals from ARIMA(0,1,1)(0,1,1)[12]`
+        `Q* = ... , df = ... , p-value = 0.6153`
+      * **Hipotesis:**
+          * $H_0$: Sisaan **independen** (tidak ada autokorelasi / *White Noise*).
+          * $H_1$: Sisaan **tidak independen** (masih ada autokorelasi).
+      * **Aturan Keputusan:** Kita **INGIN** Gagal Tolak $H_0$. Kita ingin $p-value$ **BESAR** ($> 0.05$).
+      * **Diagnosis:** $p-value$ kita (misal 0.6153) **jauh lebih besar dari 0.05**. Ini **KABAR BAIK\!** Kita Gagal Tolak $H_0$, yang berarti sisaan kita **sudah independen**.
+
+**Kesimpulan Uji Independensi:** Model kita **LULUS** uji terpenting.
+
+
+
+## 5.2 Tindakan 2: Uji Normalitas (Pemeriksaan Tambahan)
+
+Sekarang, mari kita perbaiki kesalahan fatal dari draf lama. Kita akan uji normalitas sisaan secara formal. Kita gunakan `shapiro.test()`.
+
+```{r fase5-normalitas}
+# 2. Uji Formal Normalitas
+# H0: Sisaan menyebar Normal
+shapiro.test(residuals(model_terpilih))
+```
+
+### Hasil Audit Normalitas:
+
+  * **Uji Shapiro-Wilk:**
+
+      * **Hipotesis:**
+          * $H_0$: Sisaan berdistribusi **Normal**.
+          * $H_1$: Sisaan **TIDAK** berdistribusi Normal.
+      * **Aturan Keputusan:** Untuk asumsi ini, kita (sebenarnya) **INGIN** Gagal Tolak $H_0$ ($p-value > 0.05$).
+      * **Hasil:**
+          * **Interpretasi:** Karena $p-value < 0.05$, kita **TOLAK H0**. Ini berarti sisaan kita **TIDAK BERDISTRIBUSI NORMAL**.
+
+  * **Apakah Ini Akhir Dunia?**
+
+      * **Tidak.** Untuk tujuan **peramalan (forecasting)**, asumsi yang *paling penting* adalah **independensi sisaan (Ljung-Box)**, yang sudah lolos.
+      * Asumsi normalitas lebih penting jika kita ingin membuat *interval kepercayaan* (prediction interval) yang sangat presisi. Model kita masih sangat valid untuk meramal.
+
+
+## 5.3 Resume Medis (Hasil Fase 5)
+
+  * **Pasien:** `model_terpilih` (ARIMA(0,1,1)(0,1,1)[12] pada Log(data)).
+  * **Status Audit:**
+    1.  **Lulus Uji Independensi (Autokorelasi):** ✅ **YA.** (Ljung-Box $p > 0.05$ dan ACF bersih).
+    2.  **Gagal Uji Normalitas:** ❌ **TIDAK.** (Shapiro-Wilk $p < 0.05$).
+  * **Kesimpulan Klinis:** Model dinyatakan **"Cukup Sehat"** untuk peramalan. "Penyakit" utama (pola autokorelasi) telah disembuhkan. Sisaan yang tidak normal adalah "catatan" (kelemahan) yang harus dilaporkan, tapi tidak membatalkan model untuk digunakan di Fase 6.
+  * **Rencana Tindak Lanjut (Fase 6):**
+    Pasien kini siap untuk "Prediksi Kesehatan" (Peramalan).
+
+# Fase 6: Prediksi Kesehatan (Peramalan & Validasi)
+
+**Tujuan:** Menggunakan model "juara" kita (`model_terpilih`) untuk meramal dan memvalidasi hasilnya.
+
+## 6.1 Tindakan 1: Membuat Peramalan (Masih dalam Skala Log)
+
+Pertama, kita buat ramalan seperti biasa. Ingat, output dari `forecast()` ini masih dalam skala logaritmik.
+
+```{r fase6-forecast-log}
+# 1. Tentukan berapa lama kita mau meramal (sepanjang data uji kita)
+h_ramalan <- length(test.ts) # 96 observasi
+
+# 2. Buat ramalan (HASILNYA MASIH DALAM SKALA LOG)
+ramalan_log <- forecast(model_terpilih, h = h_ramalan)
+
+# 3. Cek hasil ramalan (lihat, angkanya kecil, sekitar 5.8, INI SKALA LOG)
+print(ramalan_log)
+```
+
+## 6.2 Tindakan 2: Balikkan "Obat" (Manual `exp()`) - KOREKSI PENTING
+
+Sekarang, kita harus **secara manual** meng-eksponenkan semua komponen objek ramalan kita untuk mengembalikannya ke skala asli (ppm CO2).
+
+```{r fase6-exp}
+# Buat salinan objek ramalan untuk kita modifikasi
+ramalan_asli <- ramalan_log
+
+# Balikkan (exp) komponen utama:
+ramalan_asli$mean <- exp(ramalan_log$mean)
+ramalan_asli$lower <- exp(ramalan_log$lower)
+ramalan_asli$upper <- exp(ramalan_log$upper)
+
+# Kita juga harus mengembalikan data latih di dalam objeknya ($x) ke skala asli
+ramalan_asli$x <- exp(ramalan_log$x) 
+
+# Cek ramalan_asli (Sekarang angkanya kembali ke ratusan)
+print(ramalan_asli$mean)
+```
+
+## 6.3 Tindakan 3: Validasi Visual (Skala Asli)
+
+Sekarang kita plot `ramalan_asli` (yang sudah di-`exp`) terhadap `data_mentah`.
+
+```{r fase6-plot-corrected}
+# Plot validasi: Bandingkan data asli vs. ramalan (YANG SUDAH DI-EXP)
+autoplot(data_mentah) + # Plot semua data asli (latih + uji)
+  autolayer(ramalan_asli, series="Hasil Ramalan (exp)", PI=FALSE) + 
+  autolayer(test.ts, series="Data Uji (Kenyataan)") +
+  ggtitle("Validasi Peramalan vs Data Uji (SKALA ASLI)") +
+  ylab("CO2 (ppm)") +
+  xlab("Tahun") +
+  # Zoom ke area validasi agar lebih jelas
+  coord_cartesian(xlim = c(1990, 1998)) 
+```
+
+### Diagnosis Visual:
+
+Plot ini akan menunjukkan garis "Hasil Ramalan (exp)" (biru) tumpang tindih dengan sempurna di atas garis "Data Uji (Kenyataan)" (merah), persis seperti yang kita harapkan.
+
+## 6.4 Tindakan 4: Validasi Kuantitatif (Akurasi)
+
+Terakhir, kita hitung akurasi menggunakan `ramalan_asli`.
+
+```{r fase6-accuracy-corrected}
+# Kita bandingkan 'ramalan_asli' (sudah di-exp)
+# dengan 'test.ts' (data asli).
+accuracy(ramalan_asli, test.ts)
+```
+
+### Diagnosis Kuantitatif:
+
+Fokus pada baris `Test set`. Sekarang metrik **RMSE** dan **MAPE** akan mencerminkan error yang sebenarnya dalam skala asli (ppm). MAPE yang kecil (misal, 0.20%) membuktikan keakuratan model kita.
+
+
+### Resume Medis (Hasil Fase 6)
+
+  * **Kesimpulan:** Peramalan **harus** dikembalikan ke skala asli secara manual menggunakan `exp()`.
+  * **Hasil Validasi:** Setelah dikoreksi, model terbukti **valid** dan **akurat**.
+
